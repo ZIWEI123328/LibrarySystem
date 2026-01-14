@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QDebug>
 #include <QSqlError>
+#include <QSqlQuery>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -324,13 +325,16 @@ void MainWindow::onDeleteReader()
 
 void MainWindow::onBorrowBook()
 {
-    // 获取选中的 ID (ComboBox 的当前 Model Index 对应的数据 ID)
+    // 1. 获取选中的行索引
     int readerRow = comboBorrowReader->currentIndex();
     int bookRow = comboBorrowBook->currentIndex();
 
-    if (readerRow < 0 || bookRow < 0) return;
+    if (readerRow < 0 || bookRow < 0) {
+        QMessageBox::warning(this, "提示", "请先选择读者和图书");
+        return;
+    }
 
-    // 获取实际 ID（不是显示的文本，而是隐藏的 ID 列）
+    // 2. 获取实际的 ID 和库存
     QSqlRecord readerRec = readerModel->record(readerRow);
     int readerId = readerRec.value("id").toInt();
 
@@ -338,73 +342,94 @@ void MainWindow::onBorrowBook()
     int bookId = bookRec.value("id").toInt();
     int currentCount = bookRec.value("current_count").toInt();
 
-    // 1. 检查库存
+    // 3. 检查库存
     if (currentCount <= 0) {
         QMessageBox::warning(this, "失败", "该书库存不足，无法借阅！");
         return;
     }
 
-    // 2. 插入借阅记录
-    QSqlRecord record = recordModel->record();
-    record.setValue("book_id", bookId);
-    record.setValue("reader_id", readerId);
-    record.setValue("borrow_date", QDate::currentDate().toString("yyyy-MM-dd"));
-    // 默认借阅 30 天
-    record.setValue("return_date", QDate::currentDate().addDays(30).toString("yyyy-MM-dd"));
-    record.setValue("is_returned", 0);
+    // --- 【修改开始：改用 QSqlQuery 直接插入】 ---
+    QSqlQuery query;
+    query.prepare("INSERT INTO records (book_id, reader_id, borrow_date, return_date, is_returned) "
+                  "VALUES (:book, :reader, :borrow, :return, 0)");
 
-    if (recordModel->insertRecord(-1, record)) {
-        recordModel->submitAll();
+    query.bindValue(":book", bookId);
+    query.bindValue(":reader", readerId);
+    query.bindValue(":borrow", QDate::currentDate().toString("yyyy-MM-dd"));
+    query.bindValue(":return", QDate::currentDate().addDays(30).toString("yyyy-MM-dd"));
 
-        // 3. 更新图书库存 (current_count - 1)
-        // 注意：这里为了简单直接改 Model，严谨做法应用 Database Transaction
+    if (query.exec()) {
+        // 4. 插入成功后，必须刷新 recordModel，界面才会显示刚刚插入的记录
+        recordModel->select();
+
+        // 5. 扣减库存 (同理，也可以用 SQL 更新，或者继续用 Model 更新)
+        // 这里用 Model 更新库存没问题，因为 books 表没有 setRelation，结构是原始的
         bookRec.setValue("current_count", currentCount - 1);
         bookModel->setRecord(bookRow, bookRec);
-        bookModel->submitAll();
+        bookModel->submitAll(); // 提交库存变更
+        bookModel->select();    // 刷新显示
 
         QMessageBox::information(this, "成功", "借阅成功！");
     } else {
-        QMessageBox::critical(this, "错误", recordModel->lastError().text());
+        QMessageBox::critical(this, "错误", "借阅失败: " + query.lastError().text());
     }
+    // --- 【修改结束】 ---
 }
 
 void MainWindow::onReturnBook()
 {
-    int row = recordView->currentIndex().row();
-    if (row < 0) {
-        QMessageBox::warning(this, "提示", "请先在表格中选中一条借阅记录");
+    // 1. 獲取選中的行
+    QModelIndex currentIndex = recordView->currentIndex();
+    if (!currentIndex.isValid()) {
+        QMessageBox::warning(this, "提示", "請先選擇一條借閱記錄");
         return;
     }
 
-    QSqlRecord record = recordModel->record(row);
-    int isReturned = record.value("is_returned").toInt();
+    int row = currentIndex.row();
+
+    // 2. 獲取原始數據（重點：使用 recordModel->index 確保拿到的是數據庫里的原始值）
+    // 假設表結構：0:id, 1:book_id, 2:reader_id, 3:borrow_date, 4:return_date, 5:is_returned
+    int recordId = recordModel->index(row, 0).data().toInt();
+    int bookId   = recordModel->index(row, 1).data().toInt(); // 即使顯示的是書名，index(row,1) 仍能拿到底層 ID
+    int isReturned = recordModel->index(row, 5).data().toInt();
 
     if (isReturned == 1) {
-        QMessageBox::information(this, "提示", "这本书已经归还过了");
+        QMessageBox::information(this, "提示", "該書已歸還過，無需重複操作");
         return;
     }
 
-    // 1. 标记为已还
-    record.setValue("is_returned", 1);
-    recordModel->setRecord(row, record);
-    recordModel->submitAll();
+    // 3. 執行 SQL 更新
+    QSqlQuery query;
+    // 顯式開啟事務，確保兩個表要麼都成功，要麼都失敗
+    QSqlDatabase::database().transaction();
 
-    // 2. 增加库存
-    // 注意：因为 recordModel 是 Relational，我们得通过 book_id 去 bookModel 里找对应的书更新
-    // 这里为了代码简化，建议用户手动刷新或在实际工程中写 SQL Update 语句
-    // 下面展示一种简单粗暴的刷新方式：
-    int bookId = record.value("book_id").toInt();
-    // 遍历 bookModel 找到这本书并 +1 (效率较低，但 Model/View 课设够用)
-    for(int i=0; i<bookModel->rowCount(); ++i) {
-        if(bookModel->record(i).value("id").toInt() == bookId) {
-            int count = bookModel->record(i).value("current_count").toInt();
-            bookModel->setData(bookModel->index(i, 4), count + 1); // 4是 current_count 列索引
-            bookModel->submitAll();
-            break;
-        }
+    // 更新 A：標記借閱記錄為已還
+    query.prepare("UPDATE records SET is_returned = 1 WHERE id = ?");
+    query.addBindValue(recordId);
+    if (!query.exec()) {
+        QSqlDatabase::database().rollback();
+        qDebug() << "Update records failed:" << query.lastError().text();
+        return;
     }
 
-    QMessageBox::information(this, "成功", "图书已归还");
+    // 更新 B：增加圖書表的當前庫存
+    query.prepare("UPDATE books SET current_count = current_count + 1 WHERE id = ?");
+    query.addBindValue(bookId);
+    if (!query.exec()) {
+        QSqlDatabase::database().rollback();
+        qDebug() << "Update books failed:" << query.lastError().text();
+        return;
+    }
+
+    // 4. 提交並刷新
+    if (QSqlDatabase::database().commit()) {
+        // 必須同時刷新兩個 Model，否則界面顯示不會變
+        recordModel->select();
+        bookModel->select();
+        QMessageBox::information(this, "成功", "歸還成功，資料庫已同步更新！");
+    } else {
+        QMessageBox::critical(this, "錯誤", "資料庫寫入失敗，請檢查權限");
+    }
 }
 
 void MainWindow::onExportData()
