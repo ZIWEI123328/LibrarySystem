@@ -325,40 +325,44 @@ void MainWindow::onDeleteReader()
 
 void MainWindow::onBorrowBook()
 {
-    // 1. 獲取 ComboBox 當前選中的行索引
+    // 1. 获取 ComboBox 选中的行索引
     int readerRow = comboBorrowReader->currentIndex();
     int bookRow = comboBorrowBook->currentIndex();
 
     if (readerRow < 0 || bookRow < 0) {
-        QMessageBox::warning(this, "提示", "請先選擇讀者和圖書");
+        QMessageBox::warning(this, "提示", "请先选择读者和图书");
         return;
     }
 
-    // 2. 【核心修復】從 Model 中提取真實的整數 ID，而不是取 ComboBox 的文字
-    // 這裡使用 record(row).value("id") 確保拿到的是數據庫主鍵
+    // 2. 【核心修复】从 Model 的原始记录中提取 ID
+    // 必须使用 record(row).value("id")，确保拿到的是数据库中的主键数字
     int readerId = readerModel->record(readerRow).value("id").toInt();
     int bookId   = bookModel->record(bookRow).value("id").toInt();
 
-    // 獲取當前庫存
+    // 获取当前在馆数量
     int currentCount = bookModel->record(bookRow).value("current_count").toInt();
 
-    // 偵錯輸出：請在 Qt Creator 的輸出窗口確認這些 ID 是不是大於 0 的整數
-    qDebug() << "Borrow Logic -> ReaderID:" << readerId << "BookID:" << bookId << "Stock:" << currentCount;
+    // 诊断：如果这里输出 0，说明 bookModel 的列名不是 "id"
+    qDebug() << "Debug -> ReaderID:" << readerId << "BookID:" << bookId << "Stock:" << currentCount;
 
-    // 3. 庫存檢查
-    if (currentCount <= 0) {
-        QMessageBox::warning(this, "失敗", "該書庫存不足，無法借閱！");
+    if (bookId <= 0 || readerId <= 0) {
+        QMessageBox::critical(this, "错误", "无法从表格模型中提取有效的 ID，请检查数据库初始化。");
         return;
     }
 
-    // 4. 執行數據庫操作
+    // 3. 库存检查
+    if (currentCount <= 0) {
+        QMessageBox::warning(this, "失败", "该书库存不足，无法借阅！");
+        return;
+    }
+
+    // 4. 执行数据库事务
     QSqlDatabase db = QSqlDatabase::database();
-    db.transaction(); // 開啟事務
+    db.transaction();
 
     QSqlQuery query;
 
-    // 步驟 A：向 records 表插入借閱記錄
-    // 注意：這裡必須明確插入 book_id 和 reader_id 的整數值
+    // 步骤 A：插入借阅记录
     query.prepare("INSERT INTO records (book_id, reader_id, borrow_date, return_date, is_returned) "
                   "VALUES (:bid, :rid, :bdate, :rdate, 0)");
     query.bindValue(":bid", bookId);
@@ -368,25 +372,25 @@ void MainWindow::onBorrowBook()
 
     if (!query.exec()) {
         db.rollback();
-        QMessageBox::critical(this, "錯誤", "寫入借閱記錄失敗: " + query.lastError().text());
+        QMessageBox::critical(this, "错误", "写入记录失败: " + query.lastError().text());
         return;
     }
 
-    // 步驟 B：扣減圖書表的庫存
+    // 步骤 B：扣减图书表库存
     query.prepare("UPDATE books SET current_count = current_count - 1 WHERE id = :bid");
     query.bindValue(":bid", bookId);
 
     if (query.exec()) {
-        db.commit(); // 提交事務
+        db.commit();
 
-        // 5. 強制刷新所有 Model，確保界面同步
-        recordModel->select(); // 刷新借閱記錄表
-        bookModel->select();   // 刷新圖書管理表（庫存會減少）
+        // 5. 同步刷新所有模型
+        recordModel->select();
+        bookModel->select();
 
-        QMessageBox::information(this, "成功", "借閱手續辦理成功！");
+        QMessageBox::information(this, "成功", "借阅办理成功！");
     } else {
         db.rollback();
-        QMessageBox::critical(this, "錯誤", "更新庫存失敗: " + query.lastError().text());
+        QMessageBox::critical(this, "错误", "扣减库存失败: " + query.lastError().text());
     }
 }
 void MainWindow::onReturnBook()
