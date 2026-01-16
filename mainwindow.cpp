@@ -384,7 +384,7 @@ void MainWindow::onReturnBook()
         QMessageBox::warning(this, "提示", "请先在表格中选中一条借阅记录");
         return;
     }
-    int row = currentIndex.row();
+    int row = recordView->currentIndex.row();
 
     // 2. 核心修复：直接通过 Model Index 获取底层原始数据（避开 Relational 转换）
     // 注意：这里的列索引 0, 1, 5 必须与你创建表时的顺序一致
