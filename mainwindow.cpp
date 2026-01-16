@@ -381,16 +381,16 @@ void MainWindow::onReturnBook()
     // 1. 獲取選中的行
     QModelIndex currentIndex = recordView->currentIndex();
     if (!currentIndex.isValid()) {
-        QMessageBox::warning(this, "提示", "請先選擇一條借閱記錄");
+        QMessageBox::warning(this, "提示", "請先在表格中選中一條借閱記錄");
         return;
     }
-
     int row = currentIndex.row();
 
-    // 2. 獲取原始數據（重點：使用 recordModel->index 確保拿到的是數據庫里的原始值）
-    // 假設表結構：0:id, 1:book_id, 2:reader_id, 3:borrow_date, 4:return_date, 5:is_returned
+    // 2. 獲取原始 ID (核心重點)
+    // 即使界面顯示的是書名，透過 recordModel->index(row, col).data() 仍能拿到資料庫原始 ID
+    // 請務必確認欄位索引：0:id, 1:book_id, 2:reader_id ... 5:is_returned
     int recordId = recordModel->index(row, 0).data().toInt();
-    int bookId   = recordModel->index(row, 1).data().toInt(); // 即使顯示的是書名，index(row,1) 仍能拿到底層 ID
+    int bookId   = recordModel->index(row, 1).data().toInt();
     int isReturned = recordModel->index(row, 5).data().toInt();
 
     if (isReturned == 1) {
@@ -398,37 +398,35 @@ void MainWindow::onReturnBook()
         return;
     }
 
-    // 3. 執行 SQL 更新
+    // 3. 使用 SQL 語句直接強制更新
     QSqlQuery query;
-    // 顯式開啟事務，確保兩個表要麼都成功，要麼都失敗
-    QSqlDatabase::database().transaction();
+    QSqlDatabase::database().transaction(); // 開啟事務
 
-    // 更新 A：標記借閱記錄為已還
+    // 更新 A：標記借閱記錄為已歸還
     query.prepare("UPDATE records SET is_returned = 1 WHERE id = ?");
     query.addBindValue(recordId);
     if (!query.exec()) {
+        qDebug() << "Update records error:" << query.lastError().text();
         QSqlDatabase::database().rollback();
-        qDebug() << "Update records failed:" << query.lastError().text();
         return;
     }
 
-    // 更新 B：增加圖書表的當前庫存
+    // 更新 B：增加圖書表的當前庫存 (關鍵步驟)
     query.prepare("UPDATE books SET current_count = current_count + 1 WHERE id = ?");
     query.addBindValue(bookId);
     if (!query.exec()) {
+        qDebug() << "Update books error:" << query.lastError().text();
         QSqlDatabase::database().rollback();
-        qDebug() << "Update books failed:" << query.lastError().text();
         return;
     }
 
-    // 4. 提交並刷新
+    // 4. 提交並強制刷新視圖
     if (QSqlDatabase::database().commit()) {
-        // 必須同時刷新兩個 Model，否則界面顯示不會變
-        recordModel->select();
-        bookModel->select();
-        QMessageBox::information(this, "成功", "歸還成功，資料庫已同步更新！");
+        recordModel->select(); // 刷新借閱列表
+        bookModel->select();   // 刷新圖書列表（此時庫存應增加）
+        QMessageBox::information(this, "成功", "歸還成功，庫存已自動恢復！");
     } else {
-        QMessageBox::critical(this, "錯誤", "資料庫寫入失敗，請檢查權限");
+        QMessageBox::critical(this, "錯誤", "資料庫寫入失敗，請檢查資料庫是否被其他程式鎖定");
     }
 }
 
