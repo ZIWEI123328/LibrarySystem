@@ -325,7 +325,7 @@ void MainWindow::onDeleteReader()
 
 void MainWindow::onBorrowBook()
 {
-    // 1. 获取 ComboBox 选中的行索引
+    // 1. 获取 ComboBox 选中的行
     int readerRow = comboBorrowReader->currentIndex();
     int bookRow = comboBorrowBook->currentIndex();
 
@@ -334,35 +334,35 @@ void MainWindow::onBorrowBook()
         return;
     }
 
-    // 2. 【核心修复】从 Model 的原始记录中提取 ID
-    // 必须使用 record(row).value("id")，确保拿到的是数据库中的主键数字
-    int readerId = readerModel->record(readerRow).value("id").toInt();
-    int bookId   = bookModel->record(bookRow).value("id").toInt();
+    // 2. 【核心修复】必须确保拿到的是真正的数字 ID
+    // 如果你的主键名不是 "id"，请把下面的 "id" 改成你数据库里的字段名
+    QSqlRecord bookRec = bookModel->record(bookRow);
+    QSqlRecord readerRec = readerModel->record(readerRow);
 
-    // 获取当前在馆数量
-    int currentCount = bookModel->record(bookRow).value("current_count").toInt();
+    int bookId = bookRec.value("id").toInt();
+    int readerId = readerRec.value("id").toInt();
+    int currentCount = bookRec.value("current_count").toInt();
 
-    // 诊断：如果这里输出 0，说明 bookModel 的列名不是 "id"
-    qDebug() << "Debug -> ReaderID:" << readerId << "BookID:" << bookId << "Stock:" << currentCount;
+    // 诊断输出：请查看 Qt Creator 底部的“应用程序输出”
+    qDebug() << "借书诊断 -> BookID:" << bookId << "ReaderID:" << readerId << "Stock:" << currentCount;
 
+    // 如果 ID 依然是 0，说明 "id" 这个字段名在模型里找不到
     if (bookId <= 0 || readerId <= 0) {
-        QMessageBox::critical(this, "错误", "无法从表格模型中提取有效的 ID，请检查数据库初始化。");
+        QMessageBox::critical(this, "严重错误", "无法从模型获取 ID。请检查 dbmanager.cpp 中 books 表的字段名是否为 id");
         return;
     }
 
-    // 3. 库存检查
     if (currentCount <= 0) {
-        QMessageBox::warning(this, "失败", "该书库存不足，无法借阅！");
+        QMessageBox::warning(this, "提示", "库存不足");
         return;
     }
 
-    // 4. 执行数据库事务
+    // 3. 执行数据库事务
     QSqlDatabase db = QSqlDatabase::database();
     db.transaction();
 
     QSqlQuery query;
-
-    // 步骤 A：插入借阅记录
+    // 注意：字段名必须与你 image_c497aa.png 里的表头完全一致
     query.prepare("INSERT INTO records (book_id, reader_id, borrow_date, return_date, is_returned) "
                   "VALUES (:bid, :rid, :bdate, :rdate, 0)");
     query.bindValue(":bid", bookId);
@@ -372,25 +372,22 @@ void MainWindow::onBorrowBook()
 
     if (!query.exec()) {
         db.rollback();
-        QMessageBox::critical(this, "错误", "写入记录失败: " + query.lastError().text());
+        qDebug() << "Insert Error:" << query.lastError().text();
         return;
     }
 
-    // 步骤 B：扣减图书表库存
+    // 更新库存
     query.prepare("UPDATE books SET current_count = current_count - 1 WHERE id = :bid");
     query.bindValue(":bid", bookId);
 
     if (query.exec()) {
         db.commit();
-
-        // 5. 同步刷新所有模型
-        recordModel->select();
-        bookModel->select();
-
-        QMessageBox::information(this, "成功", "借阅办理成功！");
+        bookModel->select();   // 立即刷新图书页面的库存数字
+        recordModel->select(); // 立即刷新借阅记录列表
+        QMessageBox::information(this, "成功", "借书成功！");
     } else {
         db.rollback();
-        QMessageBox::critical(this, "错误", "扣减库存失败: " + query.lastError().text());
+        QMessageBox::critical(this, "错误", "库存扣减失败");
     }
 }
 void MainWindow::onReturnBook()
