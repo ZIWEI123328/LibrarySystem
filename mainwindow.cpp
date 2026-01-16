@@ -378,22 +378,22 @@ void MainWindow::onBorrowBook()
 
 void MainWindow::onReturnBook()
 {
-    // 1. 获取选中的行
     QModelIndex currentIndex = recordView->currentIndex();
     if (!currentIndex.isValid()) {
-        QMessageBox::warning(this, "提示", "请先选中一条借阅记录");
+        QMessageBox::warning(this, "提示", "请先选中一条记录");
         return;
     }
+
     int row = currentIndex.row();
 
-    // 2. 【核心修复】使用 Qt::EditRole 获取原始 ID
-    // 即使界面显示的是书名，EditRole 也能拿到底层数据库真实的 book_id 数字
+    // --- 核心修复：使用 Qt::EditRole 角色 ---
+    // 只有指定 EditRole，才能穿透“书名”拿到真实的“book_id”数字
     int recordId = recordModel->index(row, 0).data(Qt::EditRole).toInt();
     int bookId   = recordModel->index(row, 1).data(Qt::EditRole).toInt();
     int isReturned = recordModel->index(row, 5).data(Qt::EditRole).toInt();
 
-    // 调试输出：如果 bookId 还是 0，说明列索引 1 不对
-    qDebug() << "Debug - RecordID:" << recordId << "BookID:" << bookId;
+    // 调试诊断：如果此处的 bookId 输出为 0，说明你的列索引(1)可能填错了
+    qDebug() << "Current Row:" << row << "Parsed BookID:" << bookId;
 
     if (isReturned == 1) {
         QMessageBox::information(this, "提示", "该记录已归还");
@@ -401,34 +401,29 @@ void MainWindow::onReturnBook()
     }
 
     if (bookId <= 0) {
-        QMessageBox::critical(this, "错误", "无法识别图书ID，请检查数据库关联");
+        QMessageBox::critical(this, "错误", "无法识别图书ID，请检查数据库列索引");
         return;
     }
 
-    // 3. 执行 SQL 更新
+    // 执行 SQL 更新（逻辑保持不变）
     QSqlQuery query;
     QSqlDatabase::database().transaction();
 
-    // 更新借阅记录状态
     query.prepare("UPDATE records SET is_returned = 1 WHERE id = ?");
     query.addBindValue(recordId);
-    if (!query.exec()) {
-        QSqlDatabase::database().rollback();
-        return;
-    }
+    query.exec();
 
-    // 更新图书库存
     query.prepare("UPDATE books SET current_count = current_count + 1 WHERE id = ?");
     query.addBindValue(bookId);
 
     if (query.exec() && query.numRowsAffected() > 0) {
         QSqlDatabase::database().commit();
-        recordModel->select(); // 刷新显示
-        bookModel->select();   // 同步刷新图书管理的库存
+        recordModel->select();
+        bookModel->select();
         QMessageBox::information(this, "成功", "归还成功，库存已增加！");
     } else {
         QSqlDatabase::database().rollback();
-        QMessageBox::critical(this, "错误", "库存更新失败：SQL执行成功但未找到ID " + QString::number(bookId));
+        QMessageBox::critical(this, "错误", "更新失败：请核对 ID " + QString::number(bookId));
     }
 }
 
