@@ -1,3 +1,7 @@
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
+#include <QMessageBox>
 #include "mainwindow.h"
 #include "dbmanager.h"
 #include "overduethread.h"
@@ -18,10 +22,6 @@
 #include <QSqlError>
 #include <QSqlQuery>
 
-#include <QSqlQuery>
-#include <QSqlError>
-#include <QDebug>
-#include <QMessageBox>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -397,7 +397,7 @@ void MainWindow::onBorrowBook()
 }
 void MainWindow::onReturnBook()
 {
-    // 1. 獲取選中的行索引
+    // 1. 獲取選中的行 (修復編譯錯誤，需加括號)
     QModelIndex currentIndex = recordView->currentIndex();
     if (!currentIndex.isValid()) {
         QMessageBox::warning(this, "提示", "請先選中一條借閱記錄");
@@ -405,13 +405,13 @@ void MainWindow::onReturnBook()
     }
     int row = currentIndex.row();
 
-    // 2. 【關鍵修復】明確指定使用 Qt::EditRole 來拿取原始數字 ID
-    // 假設列索引：0:記錄ID, 1:圖書ID, 5:歸還狀態
+    // 2. 【核心修復】明確指定使用 Qt::EditRole 拿取原始數字 ID
+    // 假設列索引為：0:記錄ID, 1:圖書ID, 5:歸還狀態
     int recordId = recordModel->index(row, 0).data(Qt::EditRole).toInt();
     int bookId   = recordModel->index(row, 1).data(Qt::EditRole).toInt();
     int isReturned = recordModel->index(row, 5).data(Qt::EditRole).toInt();
 
-    // 診斷輸出，請在 Qt Creator 底部窗口確認 bookId 是否大於 0
+    // 診斷輸出
     qDebug() << "Return Debug -> RecordID:" << recordId << "BookID:" << bookId;
 
     if (isReturned == 1) {
@@ -424,7 +424,7 @@ void MainWindow::onReturnBook()
         return;
     }
 
-    // 3. 執行資料庫事務更新
+    // 3. 執行資料庫更新
     QSqlDatabase db = QSqlDatabase::database();
     db.transaction();
 
@@ -443,8 +443,8 @@ void MainWindow::onReturnBook()
 
     if (query.exec() && query.numRowsAffected() > 0) {
         db.commit();
-        recordModel->select(); // 刷新列表
-        bookModel->select();   // 刷新庫存顯示
+        recordModel->select(); // 刷新借還處理列表
+        bookModel->select();   // 刷新圖書管理庫存
         QMessageBox::information(this, "成功", "歸還成功，庫存已恢復！");
     } else {
         db.rollback();
