@@ -395,33 +395,58 @@ void MainWindow::onBorrowBook()
 }
 void MainWindow::onReturnBook()
 {
-    int row = recordView->currentIndex().row();
-    if (row < 0) return;
+    // 1. 获取选中的行
+    QModelIndex currentIndex = recordView->currentIndex();
+    if (!currentIndex.isValid()) {
+        QMessageBox::warning(this, "提示", "请先选中一条借阅记录");
+        return;
+    }
+    int row = currentIndex.row();
 
-    // 1. 強制從 EditRole 獲取原始整數
-    QVariant varBookId = recordModel->index(row, 1).data(Qt::EditRole);
-    int bookId = varBookId.toInt();
+    // 2. 获取原始 ID (使用 EditRole 穿透 Relation 转换)
+    // 根据 image_c497aa.png 的列顺序：0:id, 1:book_id, 2:reader_id, 5:is_returned
+    int recordId = recordModel->index(row, 0).data(Qt::EditRole).toInt();
+    int bookId   = recordModel->index(row, 1).data(Qt::EditRole).toInt();
+    int isReturned = recordModel->index(row, 5).data(Qt::EditRole).toInt();
 
-    // 2. 增加這段報警，幫助你精確定位問題
-    if (varBookId.isNull() || bookId <= 0) {
-        QString rawData = recordModel->index(row, 1).data().toString();
-        QMessageBox::critical(this, "數據錯誤",
-                              QString("數據庫中的 BookID 為空或 0！\n當前單元格顯示內容為: %1\n這說明借閱時數據就沒存對。").arg(rawData));
+    if (isReturned == 1) {
+        QMessageBox::information(this, "提示", "该记录已归还");
         return;
     }
 
-    // 3. 執行 SQL 更新 (同前...)
+    // 诊断输出：如果 bookId 是 0，说明列索引不对
+    qDebug() << "Return Debug -> RecordID:" << recordId << "BookID:" << bookId;
+
+    // 3. 执行数据库更新
+    QSqlDatabase db = QSqlDatabase::database();
+    if (!db.transaction()) {
+        qDebug() << "Failed to start transaction:" << db.lastError().text();
+        return;
+    }
+
     QSqlQuery query;
+
+    // A: 更新借阅状态
+    query.prepare("UPDATE records SET is_returned = 1 WHERE id = ?");
+    query.addBindValue(recordId);
+    if (!query.exec()) {
+        db.rollback();
+        QMessageBox::critical(this, "错误", "更新记录失败");
+        return;
+    }
+
+    // B: 增加图书库存
     query.prepare("UPDATE books SET current_count = current_count + 1 WHERE id = ?");
     query.addBindValue(bookId);
 
     if (query.exec() && query.numRowsAffected() > 0) {
-        QSqlDatabase::database().commit();
-        recordModel->select();
-        bookModel->select();
-        QMessageBox::information(this, "成功", "歸還成功！");
+        db.commit();
+        recordModel->select(); // 刷新借阅列表
+        bookModel->select();   // 刷新图书管理页面的库存数字
+        QMessageBox::information(this, "成功", "归还成功，库存已更新！");
     } else {
-        QMessageBox::critical(this, "失敗", "找不到 ID 為 " + QString::number(bookId) + " 的書");
+        db.rollback();
+        QMessageBox::critical(this, "失败", "库存更新失败，未找到图书 ID：" + QString::number(bookId));
     }
 }
 
