@@ -397,58 +397,58 @@ void MainWindow::onBorrowBook()
 }
 void MainWindow::onReturnBook()
 {
-    // 1. 獲取選中的行 (修復編譯錯誤，需加括號)
+    // 1. 获取选中的行
     QModelIndex currentIndex = recordView->currentIndex();
     if (!currentIndex.isValid()) {
-        QMessageBox::warning(this, "提示", "請先選中一條借閱記錄");
+        QMessageBox::warning(this, "提示", "请先选中一条借阅记录");
         return;
     }
     int row = currentIndex.row();
 
-    // 2. 【核心修復】明確指定使用 Qt::EditRole 拿取原始數字 ID
-    // 假設列索引為：0:記錄ID, 1:圖書ID, 5:歸還狀態
+    // 2. 【核心修复】使用 Qt::EditRole 角色来获取“被隐藏”的原始 ID 数字
+    // 即使界面显示的是书名，EditRole 也能穿透关系，拿到数据库底层的 int 值
     int recordId = recordModel->index(row, 0).data(Qt::EditRole).toInt();
+
+    // 如果您的 book_id 在数据库里是第 2 列，这里就填 1
     int bookId   = recordModel->index(row, 1).data(Qt::EditRole).toInt();
+
+    // 如果您的 is_returned 在数据库里是第 6 列，这里就填 5
     int isReturned = recordModel->index(row, 5).data(Qt::EditRole).toInt();
 
-    // 診斷輸出
-    qDebug() << "Return Debug -> RecordID:" << recordId << "BookID:" << bookId;
+    // 3. 诊断输出：观察这里的输出，如果 bookId 还是 0，尝试改为 recordModel->index(row, 2)
+    qDebug() << "Return Debug -> Row:" << row << "RecordID:" << recordId << "BookID:" << bookId;
 
     if (isReturned == 1) {
-        QMessageBox::information(this, "提示", "該書已歸還");
+        QMessageBox::information(this, "提示", "该记录已归还过");
         return;
     }
 
     if (bookId <= 0) {
-        QMessageBox::critical(this, "錯誤", "無法提取有效的圖書ID，請重新借閱一條記錄測試");
+        QMessageBox::critical(this, "错误", "无法提取有效的图书ID。这通常是由于列索引匹配错误导致的。");
         return;
     }
 
-    // 3. 執行資料庫更新
-    QSqlDatabase db = QSqlDatabase::database();
-    db.transaction();
-
+    // 4. 执行更新逻辑
     QSqlQuery query;
-    // 更新記錄狀態
+    QSqlDatabase::database().transaction();
+
+    // 更新借阅状态
     query.prepare("UPDATE records SET is_returned = 1 WHERE id = ?");
     query.addBindValue(recordId);
-    if (!query.exec()) {
-        db.rollback();
-        return;
-    }
+    if (!query.exec()) { QSqlDatabase::database().rollback(); return; }
 
-    // 更新圖書庫存
+    // 更新图书库存
     query.prepare("UPDATE books SET current_count = current_count + 1 WHERE id = ?");
     query.addBindValue(bookId);
 
     if (query.exec() && query.numRowsAffected() > 0) {
-        db.commit();
-        recordModel->select(); // 刷新借還處理列表
-        bookModel->select();   // 刷新圖書管理庫存
-        QMessageBox::information(this, "成功", "歸還成功，庫存已恢復！");
+        QSqlDatabase::database().commit();
+        recordModel->select();
+        bookModel->select();
+        QMessageBox::information(this, "成功", "归还成功，库存已恢复！");
     } else {
-        db.rollback();
-        QMessageBox::critical(this, "錯誤", "庫存更新失敗，未找到對應圖書 ID");
+        QSqlDatabase::database().rollback();
+        QMessageBox::critical(this, "失败", "更新库存失败，请核对 ID: " + QString::number(bookId));
     }
 }
 
