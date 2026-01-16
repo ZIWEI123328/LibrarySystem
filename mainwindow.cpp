@@ -378,52 +378,65 @@ void MainWindow::onBorrowBook()
 
 void MainWindow::onReturnBook()
 {
+    // 1. 獲取當前選中的行
     QModelIndex currentIndex = recordView->currentIndex();
     if (!currentIndex.isValid()) {
-        QMessageBox::warning(this, "提示", "请先选中一条记录");
+        QMessageBox::warning(this, "提示", "請先在表格中選中一條借閱記錄");
         return;
     }
-
     int row = currentIndex.row();
 
-    // --- 核心修复：使用 Qt::EditRole 角色 ---
-    // 只有指定 EditRole，才能穿透“书名”拿到真实的“book_id”数字
+    // 2. 【核心修復】使用 Qt::EditRole 強制獲取原始 ID
+    // 即使界面顯示的是書名，EditRole 也能穿透關聯，拿到底層數據庫真實的數字 ID
+    // 假設你的 records 表列索引為：0:id, 1:book_id, 2:reader_id, 5:is_returned
     int recordId = recordModel->index(row, 0).data(Qt::EditRole).toInt();
     int bookId   = recordModel->index(row, 1).data(Qt::EditRole).toInt();
     int isReturned = recordModel->index(row, 5).data(Qt::EditRole).toInt();
 
-    // 调试诊断：如果此处的 bookId 输出为 0，说明你的列索引(1)可能填错了
-    qDebug() << "Current Row:" << row << "Parsed BookID:" << bookId;
+    // 偵錯輸出：你可以在 Qt Creator 的“應用程序輸出”窗口看到這兩個 ID 是否為正整數
+    qDebug() << "Debug -> RecordID:" << recordId << "BookID:" << bookId;
 
+    // 3. 狀態檢查
     if (isReturned == 1) {
-        QMessageBox::information(this, "提示", "该记录已归还");
+        QMessageBox::information(this, "提示", "該書已歸還過");
         return;
     }
 
     if (bookId <= 0) {
-        QMessageBox::critical(this, "错误", "无法识别图书ID，请检查数据库列索引");
+        QMessageBox::critical(this, "錯誤", "無法提取正確的圖書 ID，請檢查數據庫列索引");
         return;
     }
 
-    // 执行 SQL 更新（逻辑保持不变）
-    QSqlQuery query;
-    QSqlDatabase::database().transaction();
+    // 4. 執行數據庫事務更新
+    QSqlDatabase db = QSqlDatabase::database();
+    db.transaction(); // 開啟事務，保證兩個更新同時成功或失敗
 
+    QSqlQuery query;
+
+    // 動作 A：將借閱狀態改為已還 (is_returned = 1)
     query.prepare("UPDATE records SET is_returned = 1 WHERE id = ?");
     query.addBindValue(recordId);
-    query.exec();
+    if (!query.exec()) {
+        db.rollback();
+        QMessageBox::critical(this, "錯誤", "更新記錄失敗：" + query.lastError().text());
+        return;
+    }
 
+    // 動作 B：【關鍵】增加 books 表中對應書籍的庫存 (current_count + 1)
     query.prepare("UPDATE books SET current_count = current_count + 1 WHERE id = ?");
     query.addBindValue(bookId);
 
     if (query.exec() && query.numRowsAffected() > 0) {
-        QSqlDatabase::database().commit();
-        recordModel->select();
-        bookModel->select();
-        QMessageBox::information(this, "成功", "归还成功，库存已增加！");
+        db.commit(); // 提交事務
+
+        // 5. 強制刷新 Model，使界面立即顯示最新狀態
+        recordModel->select(); // 借閱列表會顯示“已歸還”
+        bookModel->select();   // 圖書管理頁面的庫存數字會增加
+
+        QMessageBox::information(this, "成功", "歸還成功，庫存已自動恢復！");
     } else {
-        QSqlDatabase::database().rollback();
-        QMessageBox::critical(this, "错误", "更新失败：请核对 ID " + QString::number(bookId));
+        db.rollback();
+        QMessageBox::critical(this, "錯誤", "庫存更新失敗：未能在圖書表中找到 ID 為 " + QString::number(bookId) + " 的書籍");
     }
 }
 
